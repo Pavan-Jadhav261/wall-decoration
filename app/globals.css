@@ -1,8 +1,19 @@
 @import "tailwindcss";
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0f141f;
+  --foreground: #e5ebf6;
+  --muted: #a4b2ca;
+  --glass-bg: rgba(18, 24, 35, 0.7);
+  --glass-border: rgba(148, 163, 184, 0.2);
+  --primary: #5f9dff;
+  --primary-strong: #3b80f6;
+  --hero-bg: radial-gradient(circle at 50% -15%, #355fb1 0%, rgba(53, 95, 177, 0.15) 36%, rgba(12, 16, 26, 0) 60%),
+    radial-gradient(circle at 18% 26%, rgba(82, 123, 233, 0.45) 0%, rgba(82, 123, 233, 0) 38%),
+    radial-gradient(circle at 82% 25%, rgba(96, 145, 255, 0.42) 0%, rgba(96, 145, 255, 0) 37%),
+    radial-gradient(circle at 50% 115%, rgba(255, 87, 155, 0.88) 0%, rgba(255, 87, 155, 0.68) 26%, rgba(255, 69, 120, 0.6) 45%, rgba(255, 92, 64, 0.48) 62%, rgba(22, 28, 41, 0) 80%),
+    linear-gradient(180deg, #141b2b 0%, #1f3765 46%, #334f87 65%, #2e2f47 100%);
 }
 
 @theme inline {
@@ -12,15 +23,55 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), "Segoe UI", sans-serif;
+}
+
+[data-theme="light"] {
+  --background: #f5f8ff;
+  --foreground: #101726;
+  --muted: #5a677d;
+  --glass-bg: rgba(255, 255, 255, 0.75);
+  --glass-border: rgba(148, 163, 184, 0.35);
+  --primary: #1d70ff;
+  --primary-strong: #1558ce;
+}
+
+.lovable-surface {
+  background: var(--hero-bg);
+}
+
+.glass-panel {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.text-muted {
+  color: var(--muted);
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: #f8fbff;
+  border: 1px solid transparent;
+  transition: background 0.2s ease;
+}
+
+.btn-primary:hover {
+  background: var(--primary-strong);
+}
+
+.btn-ghost {
+  background: rgba(15, 20, 31, 0.25);
+  color: #f8fbff;
+  border: 1px solid rgba(226, 234, 248, 0.25);
+}
+
+[data-theme="dark"] .btn-ghost {
+  background: rgba(5, 8, 14, 0.45);
+  border-color: rgba(226, 234, 248, 0.18);
 }
