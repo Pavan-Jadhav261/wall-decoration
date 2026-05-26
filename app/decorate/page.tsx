@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { BeforeAfterComparison } from "@/components/before-after-comparison";
 
@@ -19,21 +19,49 @@ const styleOptions = ["Modern Minimal", "Scandinavian", "Boho Chic", "Contempora
 const roomOptions = ["Living Room", "Bedroom", "Dining Area", "Office Corner"];
 const colorOptions = ["Warm neutrals + teal", "Earthy + wood tones", "Soft pastel mix", "Black + white contrast"];
 const decorChoices = ["Framed art", "Wall shelves", "Pendant lights", "Mirrors", "Planters"];
+let cachedUserRaw: string | null = null;
+let cachedUserSnapshot: SessionUser | null = null;
+
+function subscribeBrowserStorage(onStoreChange: () => void) {
+  if (typeof window === "undefined") {
+    return () => {};
+  }
+
+  const handler = () => onStoreChange();
+  window.addEventListener("storage", handler);
+  window.addEventListener("themechange", handler as EventListener);
+  return () => {
+    window.removeEventListener("storage", handler);
+    window.removeEventListener("themechange", handler as EventListener);
+  };
+}
+
+function getThemeSnapshot(): "light" | "dark" {
+  if (typeof window === "undefined") return "dark";
+  const dataTheme = document.documentElement.dataset.theme;
+  if (dataTheme === "light") return "light";
+  if (dataTheme === "dark") return "dark";
+  return localStorage.getItem("theme_mode") === "light" ? "light" : "dark";
+}
+
+function getUserSnapshot() {
+  if (typeof window === "undefined") return null;
+  const raw = localStorage.getItem("dummy_session_user");
+  if (raw === cachedUserRaw) {
+    return cachedUserSnapshot;
+  }
+  cachedUserRaw = raw;
+  cachedUserSnapshot = raw ? (JSON.parse(raw) as SessionUser) : null;
+  return cachedUserSnapshot;
+}
 
 function ThemeToggle() {
-  const [theme, setTheme] = useState<"light" | "dark">(() => {
-    if (typeof window === "undefined") return "dark";
-    return localStorage.getItem("theme_mode") === "light" ? "light" : "dark";
-  });
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-  }, [theme]);
+  const theme = useSyncExternalStore(subscribeBrowserStorage, getThemeSnapshot, () => "dark");
 
   function changeTheme(next: "light" | "dark") {
-    setTheme(next);
     localStorage.setItem("theme_mode", next);
     document.documentElement.dataset.theme = next;
+    window.dispatchEvent(new Event("themechange"));
   }
 
   return (
@@ -62,11 +90,7 @@ function ThemeToggle() {
 
 export default function DecoratePage() {
   const router = useRouter();
-  const [user] = useState<SessionUser | null>(() => {
-    if (typeof window === "undefined") return null;
-    const raw = localStorage.getItem("dummy_session_user");
-    return raw ? (JSON.parse(raw) as SessionUser) : null;
-  });
+  const user = useSyncExternalStore(subscribeBrowserStorage, getUserSnapshot, () => null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<DecorateResult | null>(null);

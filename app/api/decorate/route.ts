@@ -3,12 +3,19 @@ import { getOpenAIClient } from "@/lib/openai";
 
 const maxImageSizeBytes = 8 * 1024 * 1024;
 const allowedImageTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
-const minWallConfidence = 0.8;
+const minWallConfidence = 0.55;
+const minWallCoverage = 0.35;
+const validatorModel = process.env.OPENAI_WALL_VALIDATOR_MODEL || "gpt-4.1-mini";
+const generationModel = process.env.OPENAI_IMAGE_ORCHESTRATOR_MODEL || "gpt-5.5";
+const fallbackGenerationModel =
+  process.env.OPENAI_IMAGE_ORCHESTRATOR_FALLBACK_MODEL || "gpt-4.1";
 
 type WallValidationResult = {
   is_wall_photo: boolean;
   confidence: number;
   reason: string;
+  wall_coverage_ratio?: number;
+  has_editable_wall_surface?: boolean;
 };
 
 function extractFirstJsonObject(input: string) {
@@ -56,6 +63,84 @@ function extractGeneratedImageBase64(response: unknown) {
   return null;
 }
 
+function getApiErrorMessage(error: unknown) {
+  if (error && typeof error === "object") {
+    if ("error" in error) {
+      const apiError = (error as { error?: { message?: unknown } }).error;
+      if (apiError && typeof apiError.message === "string") {
+        return apiError.message;
+      }
+    }
+    if ("message" in error && typeof (error as { message?: unknown }).message === "string") {
+      return (error as { message: string }).message;
+    }
+  }
+  return "Unknown OpenAI error.";
+}
+
+function isRetryableGenerationModelError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const status = (error as { status?: unknown }).status;
+  const message = getApiErrorMessage(error).toLowerCase();
+  if (status === 400 || status === 404) {
+    return (
+      message.includes("does not support") ||
+      message.includes("unsupported") ||
+      message.includes("tool") ||
+      message.includes("image_generation")
+    );
+  }
+  return false;
+}
+
+async function generateDecoratedImage(params: {
+  openai: ReturnType<typeof getOpenAIClient>;
+  promptSummary: string;
+  fileId: string;
+}) {
+  const modelsToTry = [generationModel, fallbackGenerationModel].filter(
+    (value, index, list) => value && list.indexOf(value) === index,
+  );
+
+  let lastError: unknown = null;
+  for (const model of modelsToTry) {
+    try {
+      return await params.openai.responses.create({
+        model,
+        input: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: params.promptSummary,
+              },
+              {
+                type: "input_image",
+                file_id: params.fileId,
+                detail: "auto",
+              },
+            ],
+          },
+        ],
+        tools: [
+          {
+            type: "image_generation",
+            quality: "high",
+          },
+        ],
+      });
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableGenerationModelError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError ?? new Error("No compatible generation model succeeded.");
+}
+
 async function validateWallPhoto(params: {
   model: string;
   fileId: string;
@@ -71,9 +156,10 @@ async function validateWallPhoto(params: {
             type: "input_text",
             text:
               'You are validating whether an uploaded image is suitable for wall decoration editing. ' +
-              'Return only JSON with keys: is_wall_photo (boolean), confidence (0 to 1), reason (string). ' +
-              "Mark true only when this is a real photo where a wall is clearly visible and usable for decor editing. " +
-              "Mark false for selfies, people-focused photos, pets, documents, objects, outdoor scenes, food, or unclear/low-visibility walls.",
+              "Return only JSON with keys: is_wall_photo (boolean), has_editable_wall_surface (boolean), wall_coverage_ratio (0 to 1), confidence (0 to 1), reason (string). " +
+              "A valid image can be indoor or outdoor. Mark true when a wall-like surface is clearly visible and takes a meaningful portion of the frame for decoration editing. " +
+              "Do not reject only because people, trees, benches, columns, or street elements are in side areas if the wall is still dominant and editable. " +
+              "Mark false for selfies, portraits without visible wall area, documents, products close-up, food, animals, or scenes where wall area is too small/unclear.",
           },
           {
             type: "input_image",
@@ -100,8 +186,18 @@ async function validateWallPhoto(params: {
 
   try {
     const parsed = JSON.parse(jsonBlock) as Partial<WallValidationResult>;
+    const wallCoverageRatio =
+      typeof parsed.wall_coverage_ratio === "number" &&
+      Number.isFinite(parsed.wall_coverage_ratio)
+        ? Math.max(0, Math.min(1, parsed.wall_coverage_ratio))
+        : 0;
+
+    const hasEditableWallSurface = Boolean(parsed.has_editable_wall_surface);
+
     const verdict: WallValidationResult = {
       is_wall_photo: Boolean(parsed.is_wall_photo),
+      has_editable_wall_surface: hasEditableWallSurface,
+      wall_coverage_ratio: wallCoverageRatio,
       confidence:
         typeof parsed.confidence === "number" && Number.isFinite(parsed.confidence)
           ? parsed.confidence
@@ -111,7 +207,10 @@ async function validateWallPhoto(params: {
           ? parsed.reason.trim()
           : "Image is not suitable for wall decoration.",
     };
-    const ok = verdict.is_wall_photo && verdict.confidence >= minWallConfidence;
+    const ok =
+      verdict.is_wall_photo &&
+      (verdict.has_editable_wall_surface || wallCoverageRatio >= minWallCoverage) &&
+      verdict.confidence >= minWallConfidence;
     return { ok, verdict };
   } catch {
     return {
@@ -192,45 +291,26 @@ export async function POST(request: Request) {
     });
 
     const validation = await validateWallPhoto({
-      model: "gpt-5.5",
+      model: validatorModel,
       fileId: uploadedFile.id,
       openai,
     });
     if (!validation.ok) {
       return NextResponse.json(
         {
-          message: "Please upload a clear photo of a plain or mostly plain wall.",
+          message: "Please upload a photo where a wall surface is clearly visible and editable.",
           reason: validation.verdict.reason,
           confidence: validation.verdict.confidence,
+          wallCoverageRatio: validation.verdict.wall_coverage_ratio ?? 0,
         },
         { status: 422 },
       );
     }
 
-    const result = await openai.responses.create({
-      model: "gpt-5.5",
-      input: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: promptSummary,
-            },
-            {
-              type: "input_image",
-              file_id: uploadedFile.id,
-              detail: "auto",
-            },
-          ],
-        },
-      ],
-      tools: [
-        {
-          type: "image_generation",
-          quality: "high",
-        },
-      ],
+    const result = await generateDecoratedImage({
+      openai,
+      promptSummary,
+      fileId: uploadedFile.id,
     });
 
     const b64 = extractGeneratedImageBase64(result);
@@ -264,9 +344,15 @@ export async function POST(request: Request) {
           { status: 502 },
         );
       }
+      if (typeof status === "number" && status >= 400 && status < 500) {
+        return NextResponse.json(
+          { message: `OpenAI request failed: ${getApiErrorMessage(error)}` },
+          { status: 502 },
+        );
+      }
     }
     return NextResponse.json(
-      { message: "Failed to decorate image. Please try again." },
+      { message: `Failed to decorate image. ${getApiErrorMessage(error)}` },
       { status: 500 },
     );
   }
